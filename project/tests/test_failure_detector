@@ -1,0 +1,107 @@
+# Databricks notebook source
+error_text = "FileNotFoundError: Table 'sales.transactions_2023' not found. Please verify the table exists and the path is correct."
+
+result = spark.sql(
+    "SELECT ai_query('databricks-meta-llama-3-1-8b-instruct', :prompt) AS response",
+    args={"prompt": f"Classify this error as Transient or Permanent: {error_text}"}
+).collect()
+
+print(result[0]["response"])
+
+# COMMAND ----------
+
+error_text = "FileNotFoundError: Table 'sales.transactions_2023' not found. Please verify the table exists and the path is correct."
+
+prompt = """You are an expert system that classifies Databricks job failure errors.
+
+Classify the given error message into exactly one of these categories:
+- "Transient": Temporary issues likely to resolve on their own if retried (e.g. network timeouts, temporary resource unavailability, rate limits, service throttling, temporary connection issues).
+- "Permanent": Issues that will NOT resolve by simply retrying, and require a code fix, configuration change, or manual intervention (e.g. missing files/tables, invalid credentials, syntax errors, undefined variables, schema mismatches, permission errors).
+- "Unknown": Use this ONLY if the error message is too vague or ambiguous to confidently classify as Transient or Permanent.
+
+Examples:
+Error: "TimeoutError: Connection to external service timed out after 30 seconds."
+Classification: Transient
+
+Error: "FileNotFoundError: Table 'sales.transactions_2023' not found."
+Classification: Permanent
+
+Error: "NameError: name 'undefined_variable' is not defined"
+Classification: Permanent
+
+Now classify this error. Respond with ONLY valid JSON, no extra text, in exactly this format:
+{"classification": "Transient|Permanent|Unknown", "reasoning": "one sentence explanation", "confidence": "High|Medium|Low"}
+
+Error: """ + error_text
+
+result = spark.sql(
+    "SELECT ai_query('databricks-meta-llama-3-1-8b-instruct', :prompt) AS response",
+    args={"prompt": prompt}
+).collect()
+
+print(result[0]["response"])
+
+# COMMAND ----------
+
+test_errors = [
+    "TimeoutError: Connection to external service timed out after 30 seconds. The service may be temporarily unavailable.",
+    "NameError: name 'undefined_variable' is not defined",
+    "Error: Something went wrong.",
+    "Job failed with exit code 1",
+    "PermissionDenied: User does not have SELECT privilege on table 'finance.transactions'",
+    "AnalysisException: cannot resolve column 'customer_id' due to data type mismatch",
+    "429 Too Many Requests: Rate limit exceeded, please retry after some time"
+]
+
+prompt_template = """You are an expert system that classifies Databricks job failure errors.
+
+Classify the given error message into exactly one of these categories:
+- "Transient": Temporary issues likely to resolve on their own if retried (e.g. network timeouts, temporary resource unavailability, rate limits, service throttling, temporary connection issues).
+- "Permanent": Issues that will NOT resolve by simply retrying, and require a code fix, configuration change, or manual intervention (e.g. missing files/tables, invalid credentials, syntax errors, undefined variables, schema mismatches, permission errors).
+- "Unknown": The error message does not contain enough SPECIFIC evidence to confidently determine the root cause. Use this whenever the message is generic, lacks a clear reason/cause, or could plausibly be explained by BOTH a transient and a permanent scenario. Do NOT guess - if you are inferring the cause rather than reading it directly from the error text, classify as Unknown instead.
+
+Examples:
+Error: "TimeoutError: Connection to external service timed out after 30 seconds."
+Classification: Transient
+
+Error: "FileNotFoundError: Table 'sales.transactions_2023' not found."
+Classification: Permanent
+
+Error: "NameError: name 'undefined_variable' is not defined"
+Classification: Permanent
+
+Error: "Job failed with exit code 1"
+Classification: Unknown
+
+Error: "Something went wrong."
+Classification: Unknown
+
+Now classify this error. Respond with ONLY valid JSON, no extra text, in exactly this format:
+{"classification": "Transient|Permanent|Unknown", "reasoning": "one sentence explanation", "confidence": "High|Medium|Low"}
+
+Error: """
+
+import json
+
+for error_text in test_errors:
+    full_prompt = prompt_template + error_text
+    result = spark.sql(
+        "SELECT ai_query('databricks-meta-llama-3-1-8b-instruct', :prompt) AS response",
+        args={"prompt": full_prompt}
+    ).collect()
+    
+    raw_response = result[0]["response"]
+    
+    try:
+        parsed = json.loads(raw_response)
+        print(f"PARSED OK: {parsed}")
+    except json.JSONDecodeError as e:
+        print(f"PARSE FAILED: {e}")
+        print(f"RAW: {raw_response}")
+    print("-----")
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC ALTER TABLE ai_classification_autoretry.poc.failure_tracking
+# MAGIC ADD COLUMN scheduled_retry_at TIMESTAMP COMMENT 'When this failure is due for retry (NULL if not applicable)';

@@ -1,0 +1,28 @@
+# Databricks notebook source
+# ---------------------------------------------------------------------------
+# run_pipeline_cycle
+#
+# Thin runner notebook - scheduled as a Databricks Job to run every 15 min.
+# Calls all 3 orchestrator functions in sequence each cycle. Safe to run
+# repeatedly since each function only acts on rows matching its specific
+# status condition.
+# ---------------------------------------------------------------------------
+import sys
+
+PROJECT_ROOT = "/Workspace/Users/debashish8101@gmail.com/databricks-ai-classification-autoretry"
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+from src.orchestrator import (
+    detect_classify_decide,
+    execute_due_retries,
+    check_retry_outcomes,
+)
+
+print("=== Cycle start ===")
+
+detect_classify_decide()
+execute_due_retries()
+check_retry_outcomes()
+
+print("=== Cycle complete ===")

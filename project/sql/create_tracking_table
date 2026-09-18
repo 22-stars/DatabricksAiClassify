@@ -1,0 +1,42 @@
+# Databricks notebook source
+# MAGIC %sql
+# MAGIC -- ---------------------------------------------------------------------------
+# MAGIC -- Create a dedicated schema inside our POC catalog to hold all tracking
+# MAGIC -- tables for this project. Keeps things organized if we add more tables
+# MAGIC -- later (e.g. config table, feedback table).
+# MAGIC -- ---------------------------------------------------------------------------
+# MAGIC CREATE SCHEMA IF NOT EXISTS ai_classification_autoretry.poc;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- ---------------------------------------------------------------------------
+# MAGIC -- failure_tracking table
+# MAGIC --
+# MAGIC -- Grain: one row per ORIGINAL failure incident (not per poll, not per retry
+# MAGIC -- attempt separately). Retries update the same row via latest_run_id and
+# MAGIC -- retry_count, so max-retry limits apply correctly per failure chain.
+# MAGIC --
+# MAGIC -- status values (state machine):
+# MAGIC --   detected            -> failure found, not yet classified
+# MAGIC --   classified          -> AI has classified it (transient/permanent/unknown)
+# MAGIC --   retry_scheduled      -> decided to retry, waiting for scheduled time
+# MAGIC --   retried              -> retry was triggered, new run in progress
+# MAGIC --   resolved             -> a newer run of this job succeeded, no more action
+# MAGIC --   permanent_no_action  -> classified permanent, no retry taken
+# MAGIC --   max_retries_reached  -> exhausted retry attempts, escalate to human
+# MAGIC -- ---------------------------------------------------------------------------
+# MAGIC CREATE TABLE IF NOT EXISTS ai_classification_autoretry.poc.failure_tracking (
+# MAGIC     tracking_id       STRING      NOT NULL COMMENT 'Unique ID for this failure record',
+# MAGIC     job_id            STRING      NOT NULL COMMENT 'Databricks job ID that failed',
+# MAGIC     original_run_id   STRING      NOT NULL COMMENT 'run_id of the first detected failure in this chain',
+# MAGIC     latest_run_id     STRING      NOT NULL COMMENT 'run_id of the most recent attempt (updated on each retry)',
+# MAGIC     error_message     STRING                COMMENT 'Captured error text used as input to AI classification',
+# MAGIC     classification    STRING                COMMENT 'AI classification result: transient / permanent / unknown',
+# MAGIC     retry_count       INT         NOT NULL COMMENT 'Number of retries triggered so far for this failure chain',
+# MAGIC     status            STRING      NOT NULL COMMENT 'Current state in the tracking state machine',
+# MAGIC     first_failed_at   TIMESTAMP   NOT NULL COMMENT 'Timestamp of the original failure',
+# MAGIC     last_updated_at   TIMESTAMP   NOT NULL COMMENT 'Timestamp this row was last updated'
+# MAGIC )
+# MAGIC USING DELTA
+# MAGIC COMMENT 'Tracks job failures, AI classification decisions, and retry actions taken for the AI classification & auto-retry POC';
