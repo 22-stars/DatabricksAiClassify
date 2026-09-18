@@ -5,11 +5,18 @@
 # pipeline. Split into 3 independent functions since each runs on a
 # different timing cycle (detect now, retry later, check outcome even later).
 # ---------------------------------------------------------------------------
-import sys
 
-PROJECT_ROOT = "/Workspace/Users/debashish8101@gmail.com/databricks-ai-classification-autoretry"
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
+# WHY: In Databricks Repos, Python imports work relative to the repo root
+# automatically. This import block handles both Databricks Repo context
+# and local development/testing.
+import sys
+import os
+
+# Check if running in Databricks workspace - if so, repo root is auto-added to path
+# If running locally (tests), add the project root explicitly
+_project_root = os.environ.get("PROJECT_ROOT", "/Workspace/Repos/debashish8101@gmail.com/databricks-ai-classification-autoretry")
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from datetime import datetime, timedelta
 from pyspark.sql import SparkSession

@@ -1,15 +1,19 @@
 # =============================================================================
 # Test: test_ai_classifier.py
-# Purpose: Manually validates classify_error() against known error scenarios 
-# covering all 3 classification categories (Transient, Permanent, Unknown), 
-# using the test cases already validated in PROJECT_STATE.md Step 5 log 
+# Purpose: Manually validates classify_error() against known error scenarios
+# covering all 3 classification categories (Transient, Permanent, Unknown),
+# using the test cases already validated in PROJECT_STATE.md Step 5 log
 # (7/7 correct as of last manual validation).
 # =============================================================================
 
-import sys
-sys.path.append("..")  # WHY: temporary workaround to import from src/ until 
-                        # proper Git/package structure is finalized - flagged 
-                        # in PENDING CHECKPOINTS for cleanup later
+# WHY: When running in Databricks, the spark variable is auto-injected.
+# When running locally, this test needs spark - run from a notebook or
+# configure SparkSession manually.
+try:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
 
 from src.classification.ai_classifier import classify_error
 

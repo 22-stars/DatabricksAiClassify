@@ -1,9 +1,18 @@
 # Databricks notebook source
+# ---------------------------------------------------------------------------
+# zz_explore_api
+#
+# Development/testing notebook - used during initial development to explore
+# the Databricks Jobs API and validate failure detection/retry logic.
+#
+# Note: This notebook contains live run IDs and SQL for debugging that may
+# not be current. Clean up or archive after POC stabilization.
+# ---------------------------------------------------------------------------
 from src.utils.databricks_client import get_workspace_client
 
 client = get_workspace_client()
 
-# Get the list of runs for our transient_timeout dummy job (we know it failed)
+# Get the list of runs for our transient_timeout dummy job
 runs = client.jobs.list_runs(job_id="640497011436482", limit=5)
 
 for run in runs:
@@ -12,24 +21,17 @@ for run in runs:
 
 # COMMAND ----------
 
-# Fetch run output for the task that failed - this should contain the
-# actual exception/error details, not just the generic wrapper message.
-
-# First, get the run's task list to find the task_run_id
+# Fetch run output for a task to get the real error message
 run_details = client.jobs.get_run(run_id=814160410695130)
 for task in run_details.tasks:
     print("task_run_id:", task.run_id)
-
     output = client.jobs.get_run_output(run_id=task.run_id)
     print("error:", output.error)
     print("error_trace:", output.error_trace)
 
 # COMMAND ----------
 
-dbutils.library.restartPython()
-
-# COMMAND ----------
-
+# Test failure detection
 from src.detection.failure_detector import detect_new_failures
 
 failures = detect_new_failures()
@@ -40,16 +42,14 @@ for f in failures:
 
 # COMMAND ----------
 
-import sys
-sys.path.append("/Workspace/Users/debashish8101@gmail.com/databricks-ai-classification-autoretry")
+# Run orchestrator step 1: detect, classify, decide
 from src.orchestrator import detect_classify_decide
-
 detect_classify_decide()
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC SELECT tracking_id, job_id, classification, status, retry_count 
+# MAGIC SELECT tracking_id, job_id, classification, status, retry_count
 # MAGIC FROM ai_classification_autoretry.poc.failure_tracking
 # MAGIC ORDER BY first_failed_at DESC
 # MAGIC LIMIT 5;
@@ -63,29 +63,19 @@ detect_classify_decide()
 
 # COMMAND ----------
 
+# Run orchestrator step 2: execute due retries
 from src.orchestrator import execute_due_retries
 execute_due_retries()
 
 # COMMAND ----------
 
+# Run orchestrator step 3: check retry outcomes
 from src.orchestrator import check_retry_outcomes
 check_retry_outcomes()
 
 # COMMAND ----------
 
-import sys
-sys.path.append("/Workspace/Users/debashish8101@gmail.com/databricks-ai-classification-autoretry")
-from src.orchestrator import detect_classify_decide
-
-detect_classify_decide()
-
-# COMMAND ----------
-
-from src.orchestrator import detect_classify_decide
-detect_classify_decide()
-
-# COMMAND ----------
-
+# Check results for specific job
 # MAGIC %sql
 # MAGIC SELECT tracking_id, job_id, original_run_id, latest_run_id, status
 # MAGIC FROM ai_classification_autoretry.poc.failure_tracking
@@ -101,26 +91,14 @@ detect_classify_decide()
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC UPDATE ai_classification_autoretry.poc.failure_tracking
-# MAGIC SET last_updated_at = current_timestamp() - INTERVAL 16 MINUTES
-# MAGIC WHERE tracking_id = '8ec1c5be-543f-476c-b1cc-c13fe960cdd0';
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT tracking_id, status, retry_count, last_updated_at
-# MAGIC FROM ai_classification_autoretry.poc.failure_tracking
-# MAGIC WHERE tracking_id = '8ec1c5be-543f-476c-b1cc-c13fe960cdd0';
-
-# COMMAND ----------
-
+# Add all_run_ids column for deduplication (was added during development)
 # MAGIC %sql
 # MAGIC ALTER TABLE ai_classification_autoretry.poc.failure_tracking
-# MAGIC ADD COLUMN all_run_ids ARRAY<STRING> COMMENT 'Every run_id ever associated with this failure chain (original + all retries), used to prevent re-detecting already-tracked runs as new failures';
+# MAGIC ADD COLUMN IF NOT EXISTS all_run_ids ARRAY<STRING> COMMENT 'Every run_id ever associated with this failure chain (original + all retries), used to prevent re-detecting already-tracked runs as new failures';
 
 # COMMAND ----------
 
+# Backfill all_run_ids for existing records
 # MAGIC %sql
 # MAGIC UPDATE ai_classification_autoretry.poc.failure_tracking
 # MAGIC SET all_run_ids = array(original_run_id, latest_run_id)

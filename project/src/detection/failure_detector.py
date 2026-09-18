@@ -1,16 +1,4 @@
 # ---------------------------------------------------------------------------
-# TEMPORARY WORKAROUND (remove once project is connected to a Git folder):
-# Manually telling Python where our project root is, so it can find the
-# "config" and "src" folders.
-# ---------------------------------------------------------------------------
-import sys
-
-PROJECT_ROOT = "/Workspace/Users/debashish8101@gmail.com/databricks-ai-classification-autoretry"
-
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
-
-# ---------------------------------------------------------------------------
 # failure_detector.py
 #
 # Scans our pilot job list for recently failed runs, skipping any run_id

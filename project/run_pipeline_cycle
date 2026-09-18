@@ -7,12 +7,10 @@
 # repeatedly since each function only acts on rows matching its specific
 # status condition.
 # ---------------------------------------------------------------------------
-import sys
 
-PROJECT_ROOT = "/Workspace/Users/debashish8101@gmail.com/databricks-ai-classification-autoretry"
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
-
+# WHY: When running in a Databricks Repo, the repo root is already on sys.path,
+# so direct imports from `src` work without any manual configuration. This
+# notebook assumes the project is deployed to a Databricks Repo.
 from src.orchestrator import (
     detect_classify_decide,
     execute_due_retries,
