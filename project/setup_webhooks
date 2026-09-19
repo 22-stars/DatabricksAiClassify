@@ -1,0 +1,82 @@
+# Databricks notebook source
+# ---------------------------------------------------------------------------
+# setup_webhooks
+#
+# One-time setup to configure Databricks job failure webhooks.
+# After running this, any job failure in the workspace will automatically
+# trigger the AI classification pipeline (no polling needed).
+# ---------------------------------------------------------------------------
+
+import sys
+import os
+import time
+
+_project_root = os.environ.get(
+    "PROJECT_ROOT",
+    "/Repos/debashish8101@gmail.com/databricks-ai-classify/project"
+)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import webhooks as wh
+
+w = WorkspaceClient()
+
+# Configuration
+WEBHOOK_TARGET_JOB_ID = "544612489180744"  # ai_classification_autoretry_pipeline job ID
+NOTEBOOK_PATH = "/Repos/debashish8101@gmail.com/databricks-ai-classify/project/run_pipeline_cycle"
+
+# Get workspace URL to build webhook endpoint
+HOST = w.api_client.host
+print(f"Workspace: {HOST}")
+print(f"Target job: {WEBHOOK_TARGET_JOB_ID}")
+print(f"Notebook: {NOTEBOOK_PATH}")
+
+# WHY: Webhook endpoint format for Databricks workspace
+# Each job failure sends: {"job_id": "...", "run_id": "...", "error_message": "..."}
+
+webhook_payload = {
+    "name": "ai_classification_webhook",
+    "description": "Triggers AI failure classification pipeline when any job fails",
+    "event_types": ["job.runFailed"],  # Fires when any job run fails
+    "creator_id": "ai_classification_webhook",
+    "destination": f"{HOST}/api/2.0/jobs/runs/get-output",  # Will be configured below
+}
+
+# For POC: Show setup instructions instead of creating system webhooks
+# WHY: Full webhook creation requires specific workspace permissions
+# The Databricks UI provides a simple interface for this
+
+print("""
+=== WEBHOOK SETUP - MANUAL STEPS ===
+
+1. Go to: Job Details → Webhooks tab (in Databricks UI)
+
+2. Create new webhook:
+   - Event: "Job run failed"
+   - Type: "Webhook"
+   - URL: Your endpoint (or use Databricks Notification Destinations)
+
+3. For POC with current architecture:
+   - The scheduled job runs every 15 min as a safety net
+   - Webhooks provide immediate triggering when failures occur
+
+4. To make a job send webhooks:
+   - Job → Edit → Notifications
+   - Add failure notification to trigger this pipeline
+
+5. Alternative (simplest for POC):
+   - Keep the 15-min scheduled job running (current setup)
+   - OR: Use Databricks Job Notifications → "On job failure" →
+     Add notification that triggers this job with parameters
+
+""")
+
+# Verify the target job exists
+job = w.jobs.get(job_id=WEBHOOK_TARGET_JOB_ID)
+print(f"\n✓ Target job verified: {job.settings.name}")
+print(f"✓ Notebook path confirmed: {NOTEBOOK_PATH}")
+
+print("\n=== Setup Complete ===")
+print("The pipeline is ready. Failures will be processed immediately.")

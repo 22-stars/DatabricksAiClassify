@@ -2,25 +2,93 @@
 # ---------------------------------------------------------------------------
 # run_pipeline_cycle
 #
-# Thin runner notebook - scheduled as a Databricks Job to run every 15 min.
-# Calls all 3 orchestrator functions in sequence each cycle. Safe to run
-# repeatedly since each function only acts on rows matching its specific
-# status condition.
+# Entry point for the failure detection & auto-retry pipeline.
+#
+# OPERATING MODES:
+#   1. WEBHOOK MODE (default): Called by Databricks job failure notification.
+#      - Triggered automatically when any configured job fails
+#      - Processes only the specific failure that triggered it
+#      - Zero compute cost when no failures occur
+#
+#   2. PERIODIC MODE (fallback): Run as scheduled job every 15 minutes.
+#      - Processes: due retries, retry outcomes
+#      - Acts as safety net for retries missed during webhook processing
+#
+# HOW TO CONFIGURE:
+#   - For webhook: Set this notebook as the target for job failure webhooks
+#   - For periodic: Schedule as 15-min job (fallback/safety net)
 # ---------------------------------------------------------------------------
 
-# WHY: When running in a Databricks Repo, the repo root is already on sys.path,
-# so direct imports from `src` work without any manual configuration. This
-# notebook assumes the project is deployed to a Databricks Repo.
-from src.orchestrator import (
-    detect_classify_decide,
-    execute_due_retries,
+import json
+import os
+import sys
+
+# WHY: In Databricks Repos, Python imports work relative to the repo root
+# automatically. This handles both Repo and local development context.
+_project_root = os.environ.get(
+    "PROJECT_ROOT",
+    "/Repos/debashish8101@gmail.com/databricks-ai-classify/project"
+)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from src.webhook_handler import (
+    handle_failure_notification,
+    process_due_retries,
     check_retry_outcomes,
 )
 
-print("=== Cycle start ===")
+# Check if invoked with parameters (webhook mode)
+# WHY: Databricks webhooks send failure details as notebook parameters
+try:
+    dbutils = dbutils  # noqa: F821 - auto-injected in Databricks notebooks
+    job_id_param = dbutils.widgets.get("job_id") if "job_id" in [dbutils.widgets.get(t) for t in []] else None
+except (NameError, Exception):
+    job_id_param = None
 
-detect_classify_decide()
-execute_due_retries()
-check_retry_outcomes()
+# WHY: Check for job failure parameters - if present, we're in webhook mode
+_job_id = None
+_run_id = None
+_error_message = None
+
+# Try to get parameters (set by webhook trigger or manual run)
+try:
+    _job_id = dbutils.widgets.get("job_id")
+    _run_id = dbutils.widgets.get("run_id")
+    _error_message = dbutils.widgets.get("error_message")
+except Exception:
+    pass
+
+if _job_id and _run_id and _error_message:
+    # WEBHOOK MODE: Process specific failure
+    print("=== Webhook Mode: Processing Job Failure ===")
+    print(f"  Job ID: {_job_id}")
+    print(f"  Run ID: {_run_id}")
+    print("---")
+
+    handle_failure_notification(
+        job_id=_job_id,
+        run_id=_run_id,
+        error_message=_error_message,
+    )
+
+    # Also process any previously scheduled retries that might be due now
+    # (in case this webhook fires after a retry delay)
+    process_due_retries()
+
+    # Check outcome of any retries that were triggered
+    check_retry_outcomes()
+
+else:
+    # PERIODIC MODE: Safety-net cycle (no specific failure)
+    print("=== Periodic Mode: Processing Pending Retries ===")
+    print("  (Use webhook mode for automatic failure detection)")
+    print("---")
+
+    # Process retries that are due (fallback for missed webhooks)
+    process_due_retries()
+
+    # Check outcomes of any retried runs
+    check_retry_outcomes()
 
 print("=== Cycle complete ===")

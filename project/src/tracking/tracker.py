@@ -34,13 +34,19 @@ def get_known_run_ids() -> set:
     return known_ids
 
 
-def insert_new_failure(job_id: str, run_id: str, error_message: str) -> str:
+def insert_new_failure(job_id: str, run_id: str, error_message: str, first_failed_at=None) -> str:
     """
     Inserts a new failure record with status 'detected'. Returns the
     generated tracking_id.
+
+    Args:
+        first_failed_at: Optional timestamp of when failure occurred.
+                         Defaults to current time if not provided.
     """
     tracking_id = str(uuid.uuid4())
     now = datetime.utcnow()
+    if first_failed_at is None:
+        first_failed_at = now
 
     spark.sql(f"""
         INSERT INTO {TRACKING_TABLE_FULL_NAME}
@@ -48,9 +54,15 @@ def insert_new_failure(job_id: str, run_id: str, error_message: str) -> str:
          classification, retry_count, status, first_failed_at, last_updated_at,
          all_run_ids)
         VALUES (:tracking_id, :job_id, :run_id, :run_id, :error_message,
-                NULL, 0, 'detected', :now, :now, array(:run_id))
-    """, args={"tracking_id": tracking_id, "job_id": job_id, "run_id": run_id,
-               "error_message": error_message, "now": now})
+                NULL, 0, 'detected', :first_failed_at, :now, array(:run_id))
+    """, args={
+        "tracking_id": tracking_id,
+        "job_id": job_id,
+        "run_id": run_id,
+        "error_message": error_message,
+        "first_failed_at": first_failed_at,
+        "now": now,
+    })
 
     return tracking_id
 
