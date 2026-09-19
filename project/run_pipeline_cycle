@@ -5,13 +5,13 @@
 # Entry point for the failure detection & auto-retry pipeline.
 #
 # OPERATING MODES:
-#   1. WEBHOOK MODE (default): Called by Databricks job failure notification.
+#   1. WEBHOOK MODE: Called by Databricks job failure notification.
 #      - Triggered automatically when any configured job fails
 #      - Processes only the specific failure that triggered it
 #      - Zero compute cost when no failures occur
 #
 #   2. PERIODIC MODE (fallback): Run as scheduled job every 15 minutes.
-#      - Processes: due retries, retry outcomes
+#      - Scans for new failures, processes retries, checks outcomes
 #      - Acts as safety net for retries missed during webhook processing
 #
 # HOW TO CONFIGURE:
@@ -19,12 +19,9 @@
 #   - For periodic: Schedule as 15-min job (fallback/safety net)
 # ---------------------------------------------------------------------------
 
-import json
-import os
 import sys
+import os
 
-# WHY: In Databricks Repos, Python imports work relative to the repo root
-# automatically. This handles both Repo and local development context.
 _project_root = os.environ.get(
     "PROJECT_ROOT",
     "/Repos/debashish8101@gmail.com/databricks-ai-classify/project"
@@ -32,35 +29,37 @@ _project_root = os.environ.get(
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from datetime import datetime
+from src.detection.failure_detector import detect_new_failures
+from src.classification.ai_classifier import classify_error
+from src.tracking.tracker import (
+    insert_new_failure,
+    update_classification,
+    get_rows_by_status,
+    mark_as_retried,
+    mark_as_resolved,
+    mark_as_max_retries_reached,
+)
+from src.utils.databricks_client import get_workspace_client
 from src.webhook_handler import (
     handle_failure_notification,
     process_due_retries,
     check_retry_outcomes,
 )
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.getOrCreate()
 
 # Check if invoked with parameters (webhook mode)
-# WHY: Databricks webhooks send failure details as notebook parameters
-try:
-    dbutils = dbutils  # noqa: F821 - auto-injected in Databricks notebooks
-    job_id_param = dbutils.widgets.get("job_id") if "job_id" in [dbutils.widgets.get(t) for t in []] else None
-except (NameError, Exception):
-    job_id_param = None
-
-# WHY: Check for job failure parameters - if present, we're in webhook mode
-_job_id = None
-_run_id = None
-_error_message = None
-
-# Try to get parameters (set by webhook trigger or manual run)
 try:
     _job_id = dbutils.widgets.get("job_id")
     _run_id = dbutils.widgets.get("run_id")
     _error_message = dbutils.widgets.get("error_message")
 except Exception:
-    pass
+    _job_id = _run_id = _error_message = None
 
 if _job_id and _run_id and _error_message:
-    # WEBHOOK MODE: Process specific failure
+    # WEBHOOK MODE: Process specific failure immediately
     print("=== Webhook Mode: Processing Job Failure ===")
     print(f"  Job ID: {_job_id}")
     print(f"  Run ID: {_run_id}")
@@ -72,23 +71,43 @@ if _job_id and _run_id and _error_message:
         error_message=_error_message,
     )
 
-    # Also process any previously scheduled retries that might be due now
-    # (in case this webhook fires after a retry delay)
     process_due_retries()
-
-    # Check outcome of any retries that were triggered
     check_retry_outcomes()
 
 else:
-    # PERIODIC MODE: Safety-net cycle (no specific failure)
-    print("=== Periodic Mode: Processing Pending Retries ===")
-    print("  (Use webhook mode for automatic failure detection)")
+    # PERIODIC MODE: Full scan + retry + outcome check
+    print("=== Periodic Mode: Full Pipeline Cycle ===")
     print("---")
 
-    # Process retries that are due (fallback for missed webhooks)
+    # Step 1: Detect new failures (same as webhook handler does)
+    new_failures = detect_new_failures()
+    print(f"Detected {len(new_failures)} new failure(s)")
+
+    for failure in new_failures:
+        tracking_id = insert_new_failure(
+            job_id=failure["job_id"],
+            run_id=failure["run_id"],
+            error_message=failure["error_message"],
+            first_failed_at=datetime.utcnow(),
+        )
+
+        result = classify_error(failure["error_message"], spark)
+        classification = result["classification"]
+
+        if classification == "Transient":
+            new_status = "retry_scheduled"
+        elif classification == "Permanent":
+            new_status = "permanent_no_action"
+        else:
+            new_status = "unknown_flagged"
+
+        update_classification(tracking_id, classification, new_status)
+        print(f"  - job_id={failure['job_id']} run_id={failure['run_id']} -> {classification} -> {new_status}")
+
+    # Step 2: Process retries that are due
     process_due_retries()
 
-    # Check outcomes of any retried runs
+    # Step 3: Check retry outcomes
     check_retry_outcomes()
 
 print("=== Cycle complete ===")
