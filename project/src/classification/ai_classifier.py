@@ -98,3 +98,68 @@ def classify_error(error_text: str, spark) -> dict:
             "confidence": "Low",
             "parse_status": "PARSE_FAILED"
         }
+
+
+# -----------------------------------------------------------------------------
+# WHY: Separate prompt for generating fix suggestions - keeps classification
+# logic clean while allowing AI to provide actionable fix steps when needed.
+# -----------------------------------------------------------------------------
+FIX_SUGGESTION_PROMPT = """You are a senior Databricks engineer. A job just failed permanently.
+
+JOB ID: {job_id}
+ERROR MESSAGE: {error_message}
+AI CLASSIFICATION REASONING: {ai_reasoning}
+
+Please provide a fix suggestion in this exact JSON format:
+{{
+    "root_cause": "<one sentence explaining the root cause>",
+    "fix_steps": ["step 1", "step 2", "step 3"],
+    "prevention": "<one sentence on how to prevent this type of failure>"
+}}
+
+Be specific and actionable. Do not include any other text.
+"""
+
+
+def generate_fix_suggestion(error_text: str, spark, job_id=None, reasoning=None) -> dict:
+    """
+    Generate a structured fix suggestion for permanent errors.
+
+    Args:
+        error_text: The raw error message string.
+        spark: The active SparkSession.
+        job_id: Optional job ID for context.
+        reasoning: Optional AI classification reasoning to include.
+
+    Returns:
+        A dict with keys: root_cause, fix_steps, prevention.
+    """
+    job_id_str = job_id or "unknown"
+    reasoning_str = reasoning or ""
+
+    full_prompt = FIX_SUGGESTION_PROMPT.format(
+        job_id=job_id_str,
+        error_message=error_text,
+        ai_reasoning=reasoning_str
+    )
+
+    result = spark.sql(
+        "SELECT ai_query(:model, :prompt) AS response",
+        args={"model": MODEL_NAME, "prompt": full_prompt}
+    ).collect()
+
+    raw_response = result[0]["response"]
+
+    try:
+        parsed = json.loads(raw_response)
+        return {
+            "root_cause": parsed.get("root_cause", "No root cause provided"),
+            "fix_steps": parsed.get("fix_steps", ["Review error message manually"]),
+            "prevention": parsed.get("prevention", "N/A")
+        }
+    except json.JSONDecodeError:
+        return {
+            "root_cause": "Fix suggestion generation failed",
+            "fix_steps": [reasoning_str if reasoning_str else "Review error message manually"],
+            "prevention": "N/A"
+        }

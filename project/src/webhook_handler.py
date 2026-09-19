@@ -29,7 +29,7 @@ from pyspark.sql import SparkSession
 from databricks.sdk.service.jobs import RunResultState, RunLifeCycleState
 
 from config.config import MAX_RETRY_ATTEMPTS
-from src.classification.ai_classifier import classify_error
+from src.classification.ai_classifier import classify_error, generate_fix_suggestion
 from src.tracking.tracker import (
     insert_new_failure,
     update_classification,
@@ -100,10 +100,6 @@ def _handle_transient_error(tracking_id, job_id, failure_time, reasoning):
     update_classification(tracking_id, "Transient", "retry_scheduled")
     print(f"[Transient] Job {job_id} marked for retry after {RETRY_DELAY_MINUTES} min")
 
-    # Store retry time in tracking for audit (uses last_updated_at for delay calc)
-    # Retry will happen when execute_due_retries() runs (either via webhook
-    # for retry notifications, or via periodic check)
-
     # Immediately check if retry is due (in case webhook fires later than delay)
     _check_and_execute_retry(tracking_id, job_id)
 
@@ -111,14 +107,30 @@ def _handle_transient_error(tracking_id, job_id, failure_time, reasoning):
 def _handle_permanent_error(tracking_id, job_id, error_message, reasoning):
     """
     Permanent errors get NO retry.
-    Optionally: notify user with AI-powered fix suggestions.
+    Notify the job creator with:
+    - Actual error message (technical details)
+    - AI-generated fix suggestion (actionable steps)
     """
     update_classification(tracking_id, "Permanent", "permanent_no_action")
     print(f"[Permanent] Job {job_id} marked no-action - permanent error")
 
-    # For POC: rely on existing Databricks job failure notifications
-    # Store AI reasoning in tracking for future dashboard/audit
-    # In future: send fix suggestions via Slack/email
+    # Generate AI-powered fix suggestion (separate from error message)
+    fix_suggestion = _generate_ai_fix_suggestion(job_id, error_message, reasoning)
+
+    # Get job creator for notification
+    job_creator = _get_job_creator(job_id)
+
+    # Send notification with clearly separated sections
+    _send_permanent_error_notification(
+        job_id=job_id,
+        job_creator=job_creator,
+        error_message=error_message,
+        ai_reasoning=reasoning,
+        fix_suggestion=fix_suggestion,
+    )
+
+    # Store fix suggestion in tracking table for audit
+    _store_fix_suggestion(tracking_id, fix_suggestion)
 
 
 def _handle_unknown_error(tracking_id, job_id, error_message, reasoning):
@@ -140,7 +152,7 @@ def _check_and_execute_retry(tracking_id, job_id):
 
     client = get_workspace_client()
     recent_runs = list(client.jobs.list_runs(job_id=int(job_id), limit=10))
-    first_failed_millis = int(datetime.utcnow().timestamp() * 1000)  # Approximate
+    first_failed_millis = int(datetime.utcnow().timestamp() * 1000)
 
     # Safety check 1: newer run already succeeded
     already_succeeded = any(
@@ -180,7 +192,6 @@ def process_due_retries():
     - Retries from previous sessions
 
     This is a fallback mechanism - normally handled by _check_and_execute_retry().
-    Can be called periodically or on-demand.
     """
     client = get_workspace_client()
     scheduled_rows = get_rows_by_status("retry_scheduled")
@@ -270,3 +281,133 @@ def check_retry_outcomes():
 
                 update_classification(row["tracking_id"], classification, new_status)
                 print(f"  - tracking_id={row['tracking_id']} re-classified as {classification} -> {new_status}")
+
+
+# ============================================================================
+# PERMANENT ERROR NOTIFICATION & FIX SUGGESTION FUNCTIONS
+# ============================================================================
+
+def _generate_ai_fix_suggestion(job_id, error_message, reasoning):
+    """
+    Generate a clear, actionable fix suggestion using AI.
+
+    Returns a structured dict with:
+    - root_cause: What went wrong
+    - fix_steps: Numbered list of steps to fix
+    - prevention: How to avoid this in the future
+    """
+    try:
+        fix_suggestion = generate_fix_suggestion(
+            error_text=error_message,
+            spark=spark,
+            job_id=job_id,
+            reasoning=reasoning
+        )
+        return fix_suggestion
+    except Exception as e:
+        print(f"[FixGen] Failed to generate fix suggestion: {e}")
+        return {
+            "root_cause": reasoning,
+            "fix_steps": ["Review the error message and Databricks job logs manually"],
+            "prevention": "N/A"
+        }
+
+
+def _get_job_creator(job_id):
+    """
+    Get the creator/owner of a job for notification routing.
+    Falls back to creator_user_name from job metadata.
+    """
+    try:
+        client = get_workspace_client()
+        job = client.jobs.get(job_id=int(job_id))
+        return job.creator_user_name
+    except Exception as e:
+        print(f"[Notify] Could not get job creator: {e}")
+        return "debashish8101@gmail.com"
+
+
+def _send_permanent_error_notification(job_id, job_creator, error_message, ai_reasoning, fix_suggestion):
+    """
+    Send notification to job creator with clear separation between:
+    1. Actual error (technical details)
+    2. AI fix suggestion (actionable steps)
+
+    For POC: prints formatted notification (replace with email/Slack in prod).
+    """
+    # WHY: Keep error message and fix suggestions clearly separated so the
+    # recipient can see the technical details first, then the AI guidance.
+
+    separator = "=" * 60
+
+    # Section 1: Error Details
+    print(f"\n{separator}")
+    print("🔴 PERMANENT JOB FAILURE NOTIFICATION")
+    print(separator)
+    print(f"📋 Job ID: {job_id}")
+    print(f"👤 Owner: {job_creator}")
+    print(f"🕐 Detected: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"\n--- Actual Error (Technical Details) ---")
+    print(error_message)
+
+    # Section 2: AI Fix Suggestion
+    print(f"\n{separator}")
+    print("🤖 AI ANALYSIS & FIX SUGGESTION")
+    print(separator)
+    print(f"Root Cause: {fix_suggestion.get('root_cause', ai_reasoning)}")
+    print(f"\nFix Steps:")
+    for i, step in enumerate(fix_suggestion.get('fix_steps', []), 1):
+        print(f"  {i}. {step}")
+    print(f"\nPrevention: {fix_suggestion.get('prevention', 'N/A')}")
+
+    print(f"\n{separator}")
+    print("ℹ️  This job will NOT be retried automatically.")
+    print(separator)
+    print(f"[Notify] Sent to: {job_creator}")
+
+    # Store notification in tracking table for audit
+    # NOTE: Requires failure_notifications table (created in setup)
+    try:
+        fix_json = json.dumps(fix_suggestion)
+        # Escape single quotes for SQL
+        safe_error = error_message.replace("'", "\\'")
+        safe_reasoning = ai_reasoning.replace("'", "\\'")
+        safe_fix = fix_json.replace("'", "\\'")
+
+        spark.sql(f"""
+            INSERT INTO ai_classification_autoretry.poc.failure_notifications
+            (job_id, notified_user, error_message, ai_reasoning, fix_suggestion, notification_time)
+            VALUES (
+                '{job_id}',
+                '{job_creator}',
+                '{safe_error}',
+                '{safe_reasoning}',
+                '{safe_fix}',
+                current_timestamp()
+            )
+        """)
+        print("[Notify] Stored in failure_notifications table")
+    except Exception as e:
+        print(f"[Notify] Could not store in table: {e}")
+
+
+def _store_fix_suggestion(tracking_id, fix_suggestion):
+    """
+    Store the AI fix suggestion alongside the failure record for audit.
+    """
+    try:
+        # Add column if it doesn't exist yet
+        spark.sql(f"""
+            ALTER TABLE ai_classification_autoretry.poc.failure_tracking
+            ADD COLUMN IF NOT EXISTS fix_suggestion STRING
+        """)
+
+        fix_json = json.dumps(fix_suggestion).replace("'", "\\'")
+        spark.sql(f"""
+            UPDATE ai_classification_autoretry.poc.failure_tracking
+            SET fix_suggestion = '{fix_json}'
+            WHERE tracking_id = '{tracking_id}'
+        """)
+        print(f"[Store] Fix suggestion stored for tracking_id={tracking_id}")
+    except Exception as e:
+        print(f"[Store] Could not store fix suggestion: {e}")
